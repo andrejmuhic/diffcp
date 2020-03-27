@@ -13,6 +13,9 @@ from multiprocessing.pool import ThreadPool
 
 import _diffcp
 
+SCALE = 1e-10
+
+
 def pi(z, cones):
     """Projection onto R^n x K^* x R_+
 
@@ -65,7 +68,7 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
     """
     batch_size = len(As)
     if warm_starts is None:
-        warm_starts = [None]*batch_size
+        warm_starts = [None] * batch_size
     if n_jobs_forward == -1:
         n_jobs_forward = mp.cpu_count()
     if n_jobs_backward == -1:
@@ -78,7 +81,7 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
         xs, ys, ss, Ds, DTs = [], [], [], [], []
         for i in range(batch_size):
             x, y, s, D, DT = solve_and_derivative(As[i], bs[i], cs[i],
-                    cone_dicts[i], warm_starts[i], mode=mode, **kwargs)
+                                                  cone_dicts[i], warm_starts[i], mode=mode, **kwargs)
             xs += [x]
             ys += [y]
             ss += [s]
@@ -88,7 +91,7 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
         # thread pool
         pool = ThreadPool(processes=n_jobs_forward)
         args = [(A, b, c, cone_dict, warm_start, mode, kwargs) for A, b, c, cone_dict, warm_start in \
-                    zip(As, bs, cs, cone_dicts, warm_starts)]
+                zip(As, bs, cs, cone_dicts, warm_starts)]
         with threadpool_limits(limits=1):
             results = pool.starmap(solve_and_derivative_wrapper, args)
         pool.close()
@@ -107,7 +110,7 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
                 dys += [dy]
                 dss += [ds]
             return dxs, dys, dss
-        
+
         def DT_batch(dxs, dys, dss, **kwargs):
             dAs, dbs, dcs = [], [], []
             for i in range(batch_size):
@@ -120,8 +123,10 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
 
         def D_batch(dAs, dbs, dcs, **kwargs):
             pool = ThreadPool(processes=n_jobs_backward)
+
             def Di(i):
                 return Ds[i](dAs[i], dbs[i], dcs[i], **kwargs)
+
             results = pool.map(Di, range(batch_size))
             pool.close()
             dxs = [r[0] for r in results]
@@ -131,8 +136,10 @@ def solve_and_derivative_batch(As, bs, cs, cone_dicts, n_jobs_forward=-1, n_jobs
 
         def DT_batch(dxs, dys, dss, **kwargs):
             pool = ThreadPool(processes=n_jobs_backward)
+
             def DTi(i):
                 return DTs[i](dxs[i], dys[i], dss[i], **kwargs)
+
             results = pool.map(DTi, range(batch_size))
             pool.close()
             dAs = [r[0] for r in results]
@@ -223,7 +230,7 @@ def solve_and_derivative_internal(A, b, c, cone_dict, warm_start=None,
     if mode not in ["dense", "lsqr"]:
         raise ValueError("Unsupported mode {}; the supported modes are "
                          "'dense' and 'lsqr'".format(mode))
-    
+
     if np.isnan(A.data).any():
         raise RuntimeError("Found a NaN in A.")
 
@@ -258,9 +265,11 @@ def solve_and_derivative_internal(A, b, c, cone_dict, warm_start=None,
         # anderson acceleration is sometimes unstable
         result = scs.solve(data, cone_dict, acceleration_lookback=0, **kwargs)
         status = result["info"]["status"]
-
+    converged = True
     if status == "Solved/Inaccurate":
         warnings.warn("Solved/Inaccurate.")
+        converged = False
+        # raise Exception("Not converged!")
     elif status != "Solved":
         if raise_on_error:
             raise SolverError("Solver scs returned status %s" % status)
@@ -326,7 +335,11 @@ def solve_and_derivative_internal(A, b, c, cone_dict, warm_start=None,
         dx = du - x * dw
         dy = D_proj_dual_cone.matvec(dv) - y * dw
         ds = D_proj_dual_cone.matvec(dv) - dv - s * dw
-        return -dx, -dy, -ds
+        if converged:
+            return -dx, -dy, -ds
+        else:
+            return -SCALE * np.random.randn(*dx.shape), -SCALE * np.random.randn(*dy.shape), -SCALE * np.random.randn(
+                *ds.shape)
 
     def adjoint_derivative(dx, dy, ds, **kwargs):
         """Applies adjoint of derivative at (A, b, c) to perturbations dx, dy, ds
@@ -353,8 +366,11 @@ def solve_and_derivative_internal(A, b, c, cone_dict, warm_start=None,
         dA = sparse.csc_matrix((values, (rows, cols)), shape=A.shape)
         db = pi_z[n:n + m] * r[-1] - pi_z[-1] * r[n:n + m]
         dc = pi_z[:n] * r[-1] - pi_z[-1] * r[:n]
-
-        return dA, db, dc
+        if converged:
+            return dA, db, dc
+        else:
+            return -SCALE * np.random.randn(*dA.shape), -SCALE * np.random.randn(*db.shape), -SCALE * np.random.randn(
+                *dc.shape)
 
     result["D"] = derivative
     result["DT"] = adjoint_derivative
